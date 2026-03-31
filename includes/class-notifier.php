@@ -125,6 +125,13 @@ class WPSM_Notifier {
         $db_bytes = (float) $wpdb->get_var( "SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema = DATABASE()" );
         $db_msg   = '✅ ' . self::format_bytes( $db_bytes );
 
+        // Memory usage.
+        $mem_used  = memory_get_peak_usage( true );
+        $mem_limit = self::parse_memory_limit( ini_get( 'memory_limit' ) );
+        $mem_pct   = $mem_limit > 0 ? (int) round( ( $mem_used / $mem_limit ) * 100 ) : 0;
+        $mem_icon  = $mem_pct >= 90 ? '🔴' : ( $mem_pct >= 75 ? '🟡' : '✅' );
+        $mem_msg   = "{$mem_icon} {$mem_pct}% — " . size_format( $mem_used, 1 ) . ' of ' . size_format( $mem_limit, 1 );
+
         // Recent alerts summary (last 24 hours).
         $alerts    = get_option( 'wpsm_recent_alerts', array() );
         $since     = strtotime( '-24 hours', current_time( 'timestamp' ) );
@@ -146,6 +153,7 @@ class WPSM_Notifier {
             "*Themes:* {$theme_msg}",
             "*SSL:* {$ssl_msg}",
             "*Database:* {$db_msg}",
+            "*Memory:* {$mem_msg}",
             "*Last 24h alerts:* {$alerts_msg}",
         ) );
 
@@ -315,6 +323,18 @@ class WPSM_Notifier {
             return "🟡 Expires in {$days} days";
         }
         return "✅ Valid ({$days} days remaining)";
+    }
+
+    private static function parse_memory_limit( $val ) {
+        $val  = trim( $val );
+        $last = strtolower( $val[ strlen( $val ) - 1 ] );
+        $num  = (int) $val;
+        switch ( $last ) {
+            case 'g': $num *= 1024;
+            case 'm': $num *= 1024;
+            case 'k': $num *= 1024;
+        }
+        return $num;
     }
 
     private static function format_bytes( $bytes ) {
