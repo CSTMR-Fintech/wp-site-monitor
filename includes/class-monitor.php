@@ -23,11 +23,11 @@ class WPSM_Monitor {
     }
 
     public function setup_hooks() {
-        add_action( 'wp_login_failed',   array( $this, 'track_failed_login' ) );
-        add_action( 'user_login',        array( $this, 'track_successful_login' ), 10, 2 );
-        add_action( 'wp',                array( $this, 'track_slow_page_load' ) );
-        add_action( 'shutdown',          array( $this, 'detect_wp_errors' ) );
-        add_action( 'template_redirect', array( $this, 'track_404' ) );
+        add_action( 'wp_login_failed',    array( $this, 'track_failed_login' ) );
+        add_action( 'user_login',         array( $this, 'track_successful_login' ), 10, 2 );
+        add_action( 'wp',                 array( $this, 'track_slow_page_load' ) );
+        add_action( 'shutdown',           array( $this, 'detect_wp_errors' ) );
+        add_action( 'template_redirect',  array( $this, 'track_404' ) );
         add_action( 'wpsm_hourly_checks', array( $this, 'run_scheduled_checks' ) );
     }
 
@@ -43,7 +43,6 @@ class WPSM_Monitor {
         $this->check_site_reachability();
         $this->check_cron_health();
         $this->check_woocommerce_orders();
-
     }
 
     public function check_core_updates() {
@@ -72,20 +71,18 @@ class WPSM_Monitor {
                 $plugin_data = get_plugin_data( WP_PLUGIN_DIR . '/' . $file, false, false );
                 $names[]     = ! empty( $plugin_data['Name'] ) ? $plugin_data['Name'] : $file;
             }
-            $count = count( $names );
             WPSM_Notifier::send_alert(
                 'warning',
-                sprintf( '%d plugin update(s) available: %s', $count, implode( ', ', $names ) )
+                sprintf( '%d plugin update(s) available: %s', count( $names ), implode( ', ', $names ) )
             );
         }
 
         $themes = get_site_transient( 'update_themes' );
         if ( ! empty( $themes->response ) ) {
             $theme_names = array_keys( $themes->response );
-            $count       = count( $theme_names );
             WPSM_Notifier::send_alert(
                 'warning',
-                sprintf( '%d theme update(s) available: %s', $count, implode( ', ', $theme_names ) )
+                sprintf( '%d theme update(s) available: %s', count( $theme_names ), implode( ', ', $theme_names ) )
             );
         }
     }
@@ -96,8 +93,9 @@ class WPSM_Monitor {
             return;
         }
 
+        // 5s timeout — was 15s, could cause gateway timeouts on managed hosts.
         $context = stream_context_create( array( 'ssl' => array( 'capture_peer_cert' => true, 'verify_peer' => true ) ) );
-        $stream  = @stream_socket_client( 'ssl://' . $host . ':443', $errno, $errstr, 15, STREAM_CLIENT_CONNECT, $context );
+        $stream  = @stream_socket_client( 'ssl://' . $host . ':443', $errno, $errstr, 5, STREAM_CLIENT_CONNECT, $context );
 
         if ( ! $stream ) {
             WPSM_Notifier::send_alert( 'critical', 'SSL certificate could not be verified — site may not be reachable over HTTPS.' );
@@ -129,24 +127,27 @@ class WPSM_Monitor {
 
     public function check_database_usage() {
         global $wpdb;
-        $db_bytes  = (float) $wpdb->get_var( "SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema = DATABASE()" );
+        // No user input — DATABASE() is a MySQL function, safe without prepare().
+        $db_bytes  = (float) $wpdb->get_var( 'SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema = DATABASE()' );
         $threshold = 1024 * 1024 * 1024; // 1 GB
 
         if ( $db_bytes >= $threshold ) {
-            $gb = round( $db_bytes / $threshold, 2 );
-            WPSM_Notifier::send_alert( 'warning', sprintf( 'Database size is %s GB — consider optimizing or upgrading storage.', $gb ) );
+            WPSM_Notifier::send_alert(
+                'warning',
+                sprintf( 'Database size is %s GB — consider optimizing or upgrading storage.', round( $db_bytes / $threshold, 2 ) )
+            );
         }
     }
 
     /**
-     * Ping the site's own home URL to detect downtime or HTTP errors.
-     * This catches cases where the front-end returns 5xx/4xx even when WP cron runs.
+     * Ping the site's home URL to detect front-end errors.
+     * Timeout reduced to 5s — was 15s which could hang cron on managed hosts.
      */
     public function check_site_reachability() {
         $url      = home_url( '/' );
         $response = wp_remote_get( $url, array(
-            'timeout'   => 15,
-            'sslverify' => false, // avoid false positives from self-signed certs in local environments.
+            'timeout'   => 5,
+            'sslverify' => false,
         ) );
 
         if ( is_wp_error( $response ) ) {
@@ -159,15 +160,9 @@ class WPSM_Monitor {
 
         $code = wp_remote_retrieve_response_code( $response );
         if ( $code >= 500 ) {
-            WPSM_Notifier::send_alert(
-                'critical',
-                sprintf( 'Site returned HTTP %d — server error detected.', $code )
-            );
+            WPSM_Notifier::send_alert( 'critical', sprintf( 'Site returned HTTP %d — server error detected.', $code ) );
         } elseif ( $code >= 400 ) {
-            WPSM_Notifier::send_alert(
-                'warning',
-                sprintf( 'Site returned HTTP %d — check your configuration.', $code )
-            );
+            WPSM_Notifier::send_alert( 'warning', sprintf( 'Site returned HTTP %d — check your configuration.', $code ) );
         }
     }
 
@@ -179,7 +174,6 @@ class WPSM_Monitor {
             return;
         }
 
-        // Detect jobs overdue by more than 1 hour.
         $overdue = array();
         $now     = time();
         foreach ( $crons as $timestamp => $hooks ) {
@@ -225,35 +219,31 @@ class WPSM_Monitor {
     }
 
     public function track_successful_login( $user_login, $user ) {
-        // Only log admin logins.
         if ( user_can( $user, 'manage_options' ) ) {
-            $ip = $this->get_remote_ip();
             WPSM_Notifier::log_event(
                 'info',
-                sprintf( 'Admin "%s" logged in from %s', $user_login, $ip )
+                sprintf( 'Admin "%s" logged in from %s', $user_login, $this->get_remote_ip() )
             );
         }
     }
 
     public function track_slow_page_load() {
-        if ( ! function_exists( 'timer_stop' ) ) {
+        // Bail early in non-HTTP contexts (CLI, cron) where timer_stop may not be meaningful.
+        if ( ! function_exists( 'timer_stop' ) || ( defined( 'DOING_CRON' ) && DOING_CRON ) || ( defined( 'WP_CLI' ) && WP_CLI ) ) {
             return;
         }
 
         $seconds = (float) timer_stop( 0, 3 );
         if ( $seconds > 3 ) {
-            $uri = esc_url_raw( $_SERVER['REQUEST_URI'] ?? '/' );
-            WPSM_Notifier::log_event(
-                'warning',
-                sprintf( 'Slow page load: %ss for %s', $seconds, $uri )
-            );
+            $uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '/';
+            WPSM_Notifier::log_event( 'warning', sprintf( 'Slow page load: %ss for %s', $seconds, $uri ) );
         }
     }
 
     /**
-     * WP shutdown hook — catches PHP errors that WordPress itself can handle.
-     * For true PHP fatals that kill WP entirely, see wpsm_php_shutdown_handler()
-     * in the main plugin file (registered with register_shutdown_function).
+     * WP shutdown hook — catches PHP errors WordPress itself can handle.
+     * PHP-level fatals (parse errors that kill WP entirely) are caught by
+     * wpsm_php_shutdown_handler() in wp-site-monitor.php instead.
      */
     public function detect_wp_errors() {
         $error       = error_get_last();
@@ -261,6 +251,11 @@ class WPSM_Monitor {
 
         if ( empty( $error ) || ! in_array( $error['type'], $fatal_types, true ) ) {
             return;
+        }
+
+        // Mark as handled so the watchdog mu-plugin doesn't double-alert.
+        if ( ! defined( 'WPSM_FATAL_HANDLED' ) ) {
+            define( 'WPSM_FATAL_HANDLED', true );
         }
 
         $message = sprintf(
@@ -278,7 +273,7 @@ class WPSM_Monitor {
             return;
         }
 
-        $uri = esc_url_raw( $_SERVER['REQUEST_URI'] ?? '' );
+        $uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
         WPSM_Notifier::log_event( 'info', sprintf( '404 Not Found: %s', $uri ) );
     }
 

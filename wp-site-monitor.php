@@ -3,7 +3,7 @@
  * Plugin Name: WP Site Monitor
  * Plugin URI:  https://cstmr.com
  * Description: Monitors security, performance, updates and site health. Slack alerts and REST API included.
- * Version:     1.2.2
+ * Version:     1.3.0
  * Author:      CSTMR
  * Author URI:  https://ctsmr.com
  * Text Domain: wp-site-monitor
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'WPSM_VERSION' ) ) {
-    define( 'WPSM_VERSION', '1.2.2' );
+    define( 'WPSM_VERSION', '1.3.0' );
 }
 
 define( 'WPSM_PLUGIN_FILE', __FILE__ );
@@ -65,6 +65,21 @@ function wpsm_php_shutdown_handler() {
     if ( ! class_exists( 'WPSM_Settings' ) || ! class_exists( 'WPSM_Notifier' ) ) {
         return;
     }
+
+    // Cooldown: same error within 5 minutes → skip to avoid Slack flood.
+    $error_hash = md5( $error['message'] . $error['file'] . $error['line'] );
+    $lock_file  = trailingslashit( WP_CONTENT_DIR ) . '.wpsm-shutdown.lock';
+
+    if ( file_exists( $lock_file ) ) {
+        $data = json_decode( file_get_contents( $lock_file ), true );
+        if ( isset( $data['hash'], $data['time'] ) &&
+             $data['hash'] === $error_hash &&
+             ( time() - (int) $data['time'] ) < 300 ) {
+            return;
+        }
+    }
+
+    file_put_contents( $lock_file, json_encode( array( 'hash' => $error_hash, 'time' => time() ) ), LOCK_EX );
 
     $message = sprintf(
         'Fatal PHP error: %s in %s on line %d',

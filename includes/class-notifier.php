@@ -154,7 +154,7 @@ class WPSM_Notifier {
         wp_remote_post( $webhook, array(
             'headers'   => array( 'Content-Type' => 'application/json' ),
             'body'      => wp_json_encode( $payload ),
-            'timeout'   => 15,
+            'timeout'   => 5,
             'sslverify' => true,
         ) );
     }
@@ -200,7 +200,8 @@ class WPSM_Notifier {
         curl_setopt( $ch, CURLOPT_POSTFIELDS, $body );
         curl_setopt( $ch, CURLOPT_HTTPHEADER, array( 'Content-Type: application/json' ) );
         curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
-        curl_setopt( $ch, CURLOPT_TIMEOUT, 10 );
+        curl_setopt( $ch, CURLOPT_CONNECTTIMEOUT, 3 );
+        curl_setopt( $ch, CURLOPT_TIMEOUT, 5 );
         curl_exec( $ch );
         curl_close( $ch );
     }
@@ -248,7 +249,7 @@ class WPSM_Notifier {
         wp_remote_post( $webhook, array(
             'headers'   => array( 'Content-Type' => 'application/json' ),
             'body'      => wp_json_encode( $payload ),
-            'timeout'   => 15,
+            'timeout'   => 5,
             'sslverify' => true,
         ) );
     }
@@ -273,7 +274,7 @@ class WPSM_Notifier {
         wp_remote_post( $url, array(
             'headers'   => array( 'Content-Type' => 'application/json' ),
             'body'      => wp_json_encode( $payload ),
-            'timeout'   => 15,
+            'timeout'   => 5,
             'sslverify' => true,
         ) );
     }
@@ -285,7 +286,7 @@ class WPSM_Notifier {
         }
 
         $context = stream_context_create( array( 'ssl' => array( 'capture_peer_cert' => true, 'verify_peer' => true ) ) );
-        $stream  = @stream_socket_client( 'ssl://' . $host . ':443', $errno, $errstr, 10, STREAM_CLIENT_CONNECT, $context );
+        $stream  = @stream_socket_client( 'ssl://' . $host . ':443', $errno, $errstr, 5, STREAM_CLIENT_CONNECT, $context );
 
         if ( ! $stream ) {
             return '🔴 Could not connect';

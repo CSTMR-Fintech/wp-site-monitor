@@ -72,7 +72,7 @@ class WPSM_API {
             return new WP_Error( 'wpsm_api_key_missing', 'API key required. Pass it in the x-wpsm-api-key header or api_key query param.', array( 'status' => 401 ) );
         }
 
-        if ( hash_equals( wp_hash( $stored ), wp_hash( sanitize_text_field( $provided ) ) ) ) {
+        if ( hash_equals( $stored, sanitize_text_field( $provided ) ) ) {
             return true;
         }
 
