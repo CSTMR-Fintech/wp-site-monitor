@@ -3,7 +3,7 @@
  * Plugin Name: WP Site Monitor
  * Plugin URI:  https://cstmr.com
  * Description: Monitors security, performance, updates and site health. Slack alerts and REST API included.
- * Version:     1.1.0
+ * Version:     1.1.1
  * Author:      CSTMR
  * Author URI:  https://ctsmr.com
  * Text Domain: wp-site-monitor
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'WPSM_VERSION' ) ) {
-    define( 'WPSM_VERSION', '1.1.0' );
+    define( 'WPSM_VERSION', '1.1.1' );
 }
 
 define( 'WPSM_PLUGIN_FILE', __FILE__ );
@@ -55,6 +55,11 @@ function wpsm_php_shutdown_handler() {
 
     if ( empty( $error ) || ! in_array( $error['type'], $fatal_types, true ) ) {
         return;
+    }
+
+    // Tell the watchdog mu-plugin this alert was already sent.
+    if ( ! defined( 'WPSM_FATAL_HANDLED' ) ) {
+        define( 'WPSM_FATAL_HANDLED', true );
     }
 
     if ( ! class_exists( 'WPSM_Settings' ) || ! class_exists( 'WPSM_Notifier' ) ) {

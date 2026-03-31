@@ -26,6 +26,8 @@ class WPSM_Settings {
         add_action( 'admin_post_wpsm_trigger_daily', array( $this, 'handle_trigger_daily' ) );
         add_action( 'admin_post_wpsm_clear_alerts', array( $this, 'handle_clear_alerts' ) );
         add_action( 'admin_post_wpsm_regenerate_api_key', array( $this, 'handle_regenerate_api_key' ) );
+        add_action( 'admin_post_wpsm_install_watchdog', array( $this, 'handle_install_watchdog' ) );
+        add_action( 'admin_post_wpsm_uninstall_watchdog', array( $this, 'handle_uninstall_watchdog' ) );
 
         // Hide plugin from the plugins list for non-admins.
         add_filter( 'all_plugins', array( $this, 'hide_from_non_admins' ) );
@@ -162,6 +164,59 @@ class WPSM_Settings {
         exit;
     }
 
+    public function handle_install_watchdog() {
+        check_admin_referer( 'wpsm_install_watchdog' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'Unauthorized.' );
+        }
+
+        $source = WPSM_PLUGIN_DIR . 'mu-plugin/wpsm-watchdog.php';
+        $dest   = trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php';
+
+        if ( ! is_dir( WPMU_PLUGIN_DIR ) ) {
+            wp_mkdir_p( WPMU_PLUGIN_DIR );
+        }
+
+        $result = copy( $source, $dest );
+        $status = $result ? 'watchdog_installed' : 'watchdog_error';
+
+        wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => $status ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
+    public function handle_uninstall_watchdog() {
+        check_admin_referer( 'wpsm_uninstall_watchdog' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'Unauthorized.' );
+        }
+
+        $dest = trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php';
+        if ( file_exists( $dest ) ) {
+            unlink( $dest );
+        }
+
+        wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => 'watchdog_removed' ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
+    private function get_watchdog_status() {
+        $dest          = trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php';
+        $is_installed  = file_exists( $dest );
+        $version_match = false;
+
+        if ( $is_installed ) {
+            $installed_data = get_file_data( $dest, array( 'Version' => 'Version' ) );
+            $source_data    = get_file_data( WPSM_PLUGIN_DIR . 'mu-plugin/wpsm-watchdog.php', array( 'Version' => 'Version' ) );
+            $version_match  = isset( $installed_data['Version'], $source_data['Version'] )
+                              && $installed_data['Version'] === $source_data['Version'];
+        }
+
+        return array(
+            'installed'     => $is_installed,
+            'version_match' => $version_match,
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Render
     // -------------------------------------------------------------------------
@@ -178,7 +233,10 @@ class WPSM_Settings {
                     if ( 'checks' === $ran )           echo 'Health checks executed. Any issues found were sent to Slack.';
                     elseif ( 'daily' === $ran )         echo 'Daily health report sent to Slack.';
                     elseif ( 'cleared' === $ran )       echo 'Alert log cleared.';
-                    elseif ( 'regenerated' === $ran )   echo 'API key regenerated. Update any apps using the previous key.';
+                    elseif ( 'regenerated' === $ran )        echo 'API key regenerated. Update any apps using the previous key.';
+                    elseif ( 'watchdog_installed' === $ran ) echo 'Watchdog installed successfully. Fatal errors will now trigger Slack alerts even if the main plugin crashes.';
+                    elseif ( 'watchdog_removed' === $ran )   echo 'Watchdog removed.';
+                    elseif ( 'watchdog_error' === $ran )     echo 'Could not copy the watchdog file. Check that WordPress has write permissions to the mu-plugins directory.';
                     ?>
                 </p></div>
             <?php endif; ?>
@@ -190,6 +248,9 @@ class WPSM_Settings {
                 submit_button( 'Save Settings' );
                 ?>
             </form>
+
+            <hr>
+            <?php $this->render_watchdog_section(); ?>
 
             <hr>
             <h2>Manual Triggers</h2>
@@ -359,6 +420,64 @@ class WPSM_Settings {
             </a>
         </div>
         <p class="description">Send this key in the <code>x-wpsm-api-key</code> request header or <code>?api_key=</code> query param. Never expose it publicly.</p>
+        <?php
+    }
+
+    // -------------------------------------------------------------------------
+    // Watchdog section
+    // -------------------------------------------------------------------------
+
+    private function render_watchdog_section() {
+        $status       = $this->get_watchdog_status();
+        $install_url  = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_install_watchdog' ), 'wpsm_install_watchdog' );
+        $remove_url   = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_uninstall_watchdog' ), 'wpsm_uninstall_watchdog' );
+        ?>
+        <h2>Watchdog <span style="font-size:13px;font-weight:normal;color:#666">(Fatal Error Detection)</span></h2>
+
+        <table class="widefat" style="max-width:600px">
+            <tbody>
+                <tr>
+                    <td style="width:140px;font-weight:600">Status</td>
+                    <td>
+                        <?php if ( $status['installed'] && $status['version_match'] ) : ?>
+                            ✅ <strong>Installed</strong> — fatal errors trigger Slack alerts even if the main plugin crashes.
+                        <?php elseif ( $status['installed'] && ! $status['version_match'] ) : ?>
+                            🟡 <strong>Installed but outdated</strong> — click Update to sync with the current plugin version.
+                        <?php else : ?>
+                            🔴 <strong>Not installed</strong> — parse/fatal errors in the main plugin will <em>not</em> reach Slack.
+                        <?php endif; ?>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="font-weight:600">Location</td>
+                    <td><code><?php echo esc_html( trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php' ); ?></code></td>
+                </tr>
+                <tr>
+                    <td style="font-weight:600">Action</td>
+                    <td>
+                        <?php if ( $status['installed'] ) : ?>
+                            <a href="<?php echo esc_url( $install_url ); ?>" class="button button-primary">
+                                <?php echo $status['version_match'] ? 'Reinstall' : 'Update Watchdog'; ?>
+                            </a>
+                            &nbsp;
+                            <a href="<?php echo esc_url( $remove_url ); ?>"
+                               class="button"
+                               onclick="return confirm('Remove the watchdog? Fatal errors will no longer reach Slack if the main plugin crashes.')">
+                                Remove
+                            </a>
+                        <?php else : ?>
+                            <a href="<?php echo esc_url( $install_url ); ?>" class="button button-primary">
+                                Install Watchdog
+                            </a>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        <p class="description" style="max-width:600px;margin-top:8px">
+            The watchdog is a must-use plugin (mu-plugin) that loads before everything else. It catches fatal PHP errors
+            that prevent the main plugin from loading — including syntax errors — and sends them directly to Slack via cURL.
+        </p>
         <?php
     }
 
