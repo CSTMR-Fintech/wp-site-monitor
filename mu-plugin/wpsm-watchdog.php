@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Site Monitor — Watchdog
  * Description: Must-use companion for WP Site Monitor. Catches fatal PHP errors before WordPress fully loads and sends Slack alerts.
- * Version:     1.1.1
+ * Version:     1.2.0
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
