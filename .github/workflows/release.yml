@@ -1,0 +1,40 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"   # triggers on tags like v1.0.0, v1.2.3
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build plugin zip
+        run: |
+          mkdir -p build
+          zip -r "build/wp-site-monitor-${{ steps.version.outputs.VERSION }}.zip" . \
+            --exclude="*.git*" \
+            --exclude="build/*" \
+            --exclude=".github/*" \
+            --exclude="composer.json" \
+            --exclude="composer.lock" \
+            --exclude="*.md"
+
+      - name: Create GitHub Release and upload zip
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "build/wp-site-monitor-${{ steps.version.outputs.VERSION }}.zip"
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,11 @@
+{
+    "name": "your-username/wp-site-monitor",
+    "description": "WordPress site monitoring plugin with Slack alerts and REST API.",
+    "type": "wordpress-plugin",
+    "require": {
+        "yahnis-elsts/plugin-update-checker": "^5.3"
+    },
+    "config": {
+        "vendor-dir": "vendor"
+    }
+}
