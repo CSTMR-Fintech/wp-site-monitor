@@ -451,16 +451,7 @@ class WPSM_Settings {
         $status      = $this->get_watchdog_status();
         $install_url = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_install_watchdog' ), 'wpsm_install_watchdog' );
         $remove_url  = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_uninstall_watchdog' ), 'wpsm_uninstall_watchdog' );
-        $managed     = $this->is_managed_host();
         $mu_path     = trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php';
-        $source_path = WPSM_PLUGIN_DIR . 'mu-plugin/wpsm-watchdog.php';
-
-        $host_labels = array(
-            'wpengine'   => 'WP Engine',
-            'kinsta'     => 'Kinsta',
-            'pressable'  => 'Pressable',
-            'pantheon'   => 'Pantheon',
-        );
         ?>
         <h2>Watchdog <span style="font-size:13px;font-weight:normal;color:#666">(Fatal Error Detection)</span></h2>
 
@@ -485,23 +476,7 @@ class WPSM_Settings {
                 <tr>
                     <td style="font-weight:600">Action</td>
                     <td>
-                        <?php if ( $managed ) :
-                            $host_label = $host_labels[ $managed ] ?? $managed;
-                            ?>
-                            <div style="background:#fff8e1;border-left:4px solid #ffb900;padding:10px 14px;max-width:460px">
-                                <strong>⚠️ <?php echo esc_html( $host_label ); ?> detected</strong><br>
-                                Automatic installation is not supported on managed hosts — writing to <code>mu-plugins/</code>
-                                from PHP is restricted and may cause a gateway timeout.<br><br>
-                                <strong>Install manually via SFTP/SSH:</strong>
-                                <ol style="margin:8px 0 0 16px">
-                                    <li>Download the file from your plugin: <code><?php echo esc_html( $source_path ); ?></code></li>
-                                    <li>Upload it to: <code><?php echo esc_html( $mu_path ); ?></code></li>
-                                    <?php if ( $managed === 'wpengine' ) : ?>
-                                    <li>Use WP Engine → your site → <strong>SSH Gateway</strong> or connect via SFTP from your deploy tool.</li>
-                                    <?php endif; ?>
-                                </ol>
-                            </div>
-                        <?php elseif ( $status['installed'] ) : ?>
+                        <?php if ( $status['installed'] ) : ?>
                             <a href="<?php echo esc_url( $install_url ); ?>" class="button button-primary">
                                 <?php echo $status['version_match'] ? 'Reinstall' : 'Update Watchdog'; ?>
                             </a>
