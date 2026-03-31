@@ -156,6 +156,7 @@ class WPSM_Notifier {
             'body'      => wp_json_encode( $payload ),
             'timeout'   => 5,
             'sslverify' => true,
+            'blocking'  => false,
         ) );
     }
 
@@ -251,6 +252,7 @@ class WPSM_Notifier {
             'body'      => wp_json_encode( $payload ),
             'timeout'   => 5,
             'sslverify' => true,
+            'blocking'  => false,
         ) );
     }
 
@@ -275,6 +277,7 @@ class WPSM_Notifier {
             'headers'   => array( 'Content-Type' => 'application/json' ),
             'body'      => wp_json_encode( $payload ),
             'timeout'   => 5,
+            'blocking'  => false,
             'sslverify' => true,
         ) );
     }

@@ -38,8 +38,8 @@ class WPSM_Monitor {
     public function run_scheduled_checks() {
         $this->check_core_updates();
         $this->check_plugin_theme_updates();
-        $this->check_ssl_expiration();
         $this->check_database_usage();
+        $this->check_memory_usage();
         $this->check_site_reachability();
         $this->check_cron_health();
         $this->check_woocommerce_orders();
@@ -87,42 +87,39 @@ class WPSM_Monitor {
         }
     }
 
-    public function check_ssl_expiration() {
-        $host = parse_url( home_url(), PHP_URL_HOST );
-        if ( ! $host ) {
+    public function check_memory_usage() {
+        $used  = memory_get_peak_usage( true );
+        $limit = $this->parse_memory_limit( ini_get( 'memory_limit' ) );
+
+        if ( $limit <= 0 ) {
             return;
         }
 
-        // 5s timeout — was 15s, could cause gateway timeouts on managed hosts.
-        $context = stream_context_create( array( 'ssl' => array( 'capture_peer_cert' => true, 'verify_peer' => true ) ) );
-        $stream  = @stream_socket_client( 'ssl://' . $host . ':443', $errno, $errstr, 5, STREAM_CLIENT_CONNECT, $context );
+        $percent = (int) round( ( $used / $limit ) * 100 );
 
-        if ( ! $stream ) {
-            WPSM_Notifier::send_alert( 'critical', 'SSL certificate could not be verified — site may not be reachable over HTTPS.' );
-            return;
+        if ( $percent >= 90 ) {
+            WPSM_Notifier::send_alert(
+                'critical',
+                sprintf( 'PHP memory usage at %d%% — %s of %s used.', $percent, size_format( $used, 1 ), size_format( $limit, 1 ) )
+            );
+        } elseif ( $percent >= 75 ) {
+            WPSM_Notifier::send_alert(
+                'warning',
+                sprintf( 'PHP memory usage at %d%% — %s of %s used.', $percent, size_format( $used, 1 ), size_format( $limit, 1 ) )
+            );
         }
+    }
 
-        $params = stream_context_get_params( $stream );
-        fclose( $stream );
-
-        if ( empty( $params['options']['ssl']['peer_certificate'] ) ) {
-            return;
+    private function parse_memory_limit( $val ) {
+        $val  = trim( $val );
+        $last = strtolower( $val[ strlen( $val ) - 1 ] );
+        $num  = (int) $val;
+        switch ( $last ) {
+            case 'g': $num *= 1024;
+            case 'm': $num *= 1024;
+            case 'k': $num *= 1024;
         }
-
-        $cert = openssl_x509_parse( $params['options']['ssl']['peer_certificate'] );
-        if ( ! isset( $cert['validTo_time_t'] ) ) {
-            return;
-        }
-
-        $days = (int) round( ( $cert['validTo_time_t'] - time() ) / DAY_IN_SECONDS );
-
-        if ( $days < 0 ) {
-            WPSM_Notifier::send_alert( 'critical', sprintf( 'SSL certificate has EXPIRED %d day(s) ago.', abs( $days ) ) );
-        } elseif ( $days < 14 ) {
-            WPSM_Notifier::send_alert( 'critical', sprintf( 'SSL certificate expires in %d day(s) — renew immediately.', $days ) );
-        } elseif ( $days < 30 ) {
-            WPSM_Notifier::send_alert( 'warning', sprintf( 'SSL certificate expires in %d days.', $days ) );
-        }
+        return $num;
     }
 
     public function check_database_usage() {
