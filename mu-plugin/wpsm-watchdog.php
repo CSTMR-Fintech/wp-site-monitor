@@ -91,6 +91,9 @@ function wpsm_watchdog_send_slack( $message ) {
     }
 
     $body = json_encode( array( 'text' => $text ) );
+    if ( ! $body ) {
+        return;
+    }
 
     $ch = curl_init( $webhook );
     curl_setopt( $ch, CURLOPT_POST, true );
@@ -128,7 +131,7 @@ function wpsm_watchdog_get_webhook() {
         $row = $stmt->fetch( PDO::FETCH_ASSOC );
 
         if ( $row ) {
-            $settings = unserialize( $row['option_value'] );
+            $settings = maybe_unserialize( $row['option_value'] );
             if ( is_array( $settings ) && ! empty( $settings['slack_webhook_url'] ) ) {
                 return $settings['slack_webhook_url'];
             }

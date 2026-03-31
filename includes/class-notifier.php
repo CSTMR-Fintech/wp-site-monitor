@@ -126,7 +126,7 @@ class WPSM_Notifier {
         $db_msg   = '✅ ' . self::format_bytes( $db_bytes );
 
         // Memory usage.
-        $mem_used  = memory_get_peak_usage( true );
+        $mem_used  = memory_get_usage( true );
         $mem_limit = self::parse_memory_limit( ini_get( 'memory_limit' ) );
         $mem_pct   = $mem_limit > 0 ? (int) round( ( $mem_used / $mem_limit ) * 100 ) : 0;
         $mem_icon  = $mem_pct >= 90 ? '🔴' : ( $mem_pct >= 75 ? '🟡' : '✅' );
@@ -203,6 +203,9 @@ class WPSM_Notifier {
         }
 
         $body = wp_json_encode( array( 'text' => $text ) );
+        if ( ! $body ) {
+            return;
+        }
 
         $ch = curl_init( $webhook );
         curl_setopt( $ch, CURLOPT_POST, true );

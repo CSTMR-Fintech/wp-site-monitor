@@ -99,7 +99,7 @@ class WPSM_Monitor {
     }
 
     public function check_memory_usage() {
-        $used  = memory_get_peak_usage( true );
+        $used  = memory_get_usage( true );
         $limit = $this->parse_memory_limit( ini_get( 'memory_limit' ) );
 
         if ( $limit <= 0 ) {
@@ -219,7 +219,15 @@ class WPSM_Monitor {
     // -------------------------------------------------------------------------
 
     public function track_failed_login( $username ) {
-        $ip = $this->get_remote_ip();
+        $ip       = $this->get_remote_ip();
+        $throttle = 'wpsm_fl_' . md5( $ip );
+
+        if ( get_transient( $throttle ) ) {
+            return;
+        }
+
+        set_transient( $throttle, 1, 5 * MINUTE_IN_SECONDS );
+
         WPSM_Notifier::log_event(
             'warning',
             sprintf( 'Failed login attempt for "%s" from %s', sanitize_user( $username ), $ip )
@@ -280,6 +288,12 @@ class WPSM_Monitor {
         if ( ! is_404() ) {
             return;
         }
+
+        if ( get_transient( 'wpsm_404_throttle' ) ) {
+            return;
+        }
+
+        set_transient( 'wpsm_404_throttle', 1, MINUTE_IN_SECONDS );
 
         $uri = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
         WPSM_Notifier::log_event( 'info', sprintf( '404 Not Found: %s', $uri ) );
