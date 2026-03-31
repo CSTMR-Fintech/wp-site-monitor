@@ -427,14 +427,44 @@ class WPSM_Settings {
     // Watchdog section
     // -------------------------------------------------------------------------
 
+    private function is_managed_host() {
+        // WP Engine.
+        if ( defined( 'WPE_APIKEY' ) || defined( 'WPE_PLUGIN_BASE' ) || isset( $_SERVER['IS_WPE'] ) ) {
+            return 'wpengine';
+        }
+        // Kinsta.
+        if ( defined( 'KINSTA_CACHE_ZONE' ) || isset( $_SERVER['KINSTA_CACHE_ZONE'] ) ) {
+            return 'kinsta';
+        }
+        // Pressable.
+        if ( defined( 'PRESSABLE' ) ) {
+            return 'pressable';
+        }
+        // Pantheon.
+        if ( isset( $_ENV['PANTHEON_ENVIRONMENT'] ) ) {
+            return 'pantheon';
+        }
+        return false;
+    }
+
     private function render_watchdog_section() {
-        $status       = $this->get_watchdog_status();
-        $install_url  = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_install_watchdog' ), 'wpsm_install_watchdog' );
-        $remove_url   = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_uninstall_watchdog' ), 'wpsm_uninstall_watchdog' );
+        $status      = $this->get_watchdog_status();
+        $install_url = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_install_watchdog' ), 'wpsm_install_watchdog' );
+        $remove_url  = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_uninstall_watchdog' ), 'wpsm_uninstall_watchdog' );
+        $managed     = $this->is_managed_host();
+        $mu_path     = trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php';
+        $source_path = WPSM_PLUGIN_DIR . 'mu-plugin/wpsm-watchdog.php';
+
+        $host_labels = array(
+            'wpengine'   => 'WP Engine',
+            'kinsta'     => 'Kinsta',
+            'pressable'  => 'Pressable',
+            'pantheon'   => 'Pantheon',
+        );
         ?>
         <h2>Watchdog <span style="font-size:13px;font-weight:normal;color:#666">(Fatal Error Detection)</span></h2>
 
-        <table class="widefat" style="max-width:600px">
+        <table class="widefat" style="max-width:640px">
             <tbody>
                 <tr>
                     <td style="width:140px;font-weight:600">Status</td>
@@ -442,20 +472,36 @@ class WPSM_Settings {
                         <?php if ( $status['installed'] && $status['version_match'] ) : ?>
                             ✅ <strong>Installed</strong> — fatal errors trigger Slack alerts even if the main plugin crashes.
                         <?php elseif ( $status['installed'] && ! $status['version_match'] ) : ?>
-                            🟡 <strong>Installed but outdated</strong> — click Update to sync with the current plugin version.
+                            🟡 <strong>Installed but outdated</strong> — re-upload the file to sync with the current version.
                         <?php else : ?>
                             🔴 <strong>Not installed</strong> — parse/fatal errors in the main plugin will <em>not</em> reach Slack.
                         <?php endif; ?>
                     </td>
                 </tr>
                 <tr>
-                    <td style="font-weight:600">Location</td>
-                    <td><code><?php echo esc_html( trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php' ); ?></code></td>
+                    <td style="font-weight:600">Destination</td>
+                    <td><code><?php echo esc_html( $mu_path ); ?></code></td>
                 </tr>
                 <tr>
                     <td style="font-weight:600">Action</td>
                     <td>
-                        <?php if ( $status['installed'] ) : ?>
+                        <?php if ( $managed ) :
+                            $host_label = $host_labels[ $managed ] ?? $managed;
+                            ?>
+                            <div style="background:#fff8e1;border-left:4px solid #ffb900;padding:10px 14px;max-width:460px">
+                                <strong>⚠️ <?php echo esc_html( $host_label ); ?> detected</strong><br>
+                                Automatic installation is not supported on managed hosts — writing to <code>mu-plugins/</code>
+                                from PHP is restricted and may cause a gateway timeout.<br><br>
+                                <strong>Install manually via SFTP/SSH:</strong>
+                                <ol style="margin:8px 0 0 16px">
+                                    <li>Download the file from your plugin: <code><?php echo esc_html( $source_path ); ?></code></li>
+                                    <li>Upload it to: <code><?php echo esc_html( $mu_path ); ?></code></li>
+                                    <?php if ( $managed === 'wpengine' ) : ?>
+                                    <li>Use WP Engine → your site → <strong>SSH Gateway</strong> or connect via SFTP from your deploy tool.</li>
+                                    <?php endif; ?>
+                                </ol>
+                            </div>
+                        <?php elseif ( $status['installed'] ) : ?>
                             <a href="<?php echo esc_url( $install_url ); ?>" class="button button-primary">
                                 <?php echo $status['version_match'] ? 'Reinstall' : 'Update Watchdog'; ?>
                             </a>
@@ -474,8 +520,8 @@ class WPSM_Settings {
                 </tr>
             </tbody>
         </table>
-        <p class="description" style="max-width:600px;margin-top:8px">
-            The watchdog is a must-use plugin (mu-plugin) that loads before everything else. It catches fatal PHP errors
+        <p class="description" style="max-width:640px;margin-top:8px">
+            The watchdog is a must-use plugin that loads before everything else. It catches fatal PHP errors
             that prevent the main plugin from loading — including syntax errors — and sends them directly to Slack via cURL.
         </p>
         <?php
