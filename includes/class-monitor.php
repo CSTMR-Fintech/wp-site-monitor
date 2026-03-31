@@ -36,13 +36,24 @@ class WPSM_Monitor {
     // -------------------------------------------------------------------------
 
     public function run_scheduled_checks() {
-        $this->check_core_updates();
-        $this->check_plugin_theme_updates();
-        $this->check_database_usage();
-        $this->check_memory_usage();
-        $this->check_site_reachability();
-        $this->check_cron_health();
-        $this->check_woocommerce_orders();
+        $this->timed_check( 'check_core_updates' );
+        $this->timed_check( 'check_plugin_theme_updates' );
+        $this->timed_check( 'check_database_usage' );
+        $this->timed_check( 'check_memory_usage' );
+        $this->timed_check( 'check_site_reachability' );
+        $this->timed_check( 'check_cron_health' );
+        $this->timed_check( 'check_woocommerce_orders' );
+    }
+
+    private function timed_check( $method ) {
+        if ( ! defined( 'WP_DEBUG' ) || ! WP_DEBUG ) {
+            $this->$method();
+            return;
+        }
+        $start = microtime( true );
+        $this->$method();
+        $elapsed = round( microtime( true ) - $start, 3 );
+        error_log( sprintf( '[WPSM] %s took %ss', $method, $elapsed ) );
     }
 
     public function check_core_updates() {

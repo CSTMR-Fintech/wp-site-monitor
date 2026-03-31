@@ -3,7 +3,7 @@
  * Plugin Name: WP Site Monitor
  * Plugin URI:  https://cstmr.com
  * Description: Monitors security, performance, updates and site health. Slack alerts and REST API included.
- * Version:     1.3.2
+ * Version:     1.3.3
  * Author:      CSTMR
  * Author URI:  https://ctsmr.com
  * Text Domain: wp-site-monitor
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'WPSM_VERSION' ) ) {
-    define( 'WPSM_VERSION', '1.3.2' );
+    define( 'WPSM_VERSION', '1.3.3' );
 }
 
 define( 'WPSM_PLUGIN_FILE', __FILE__ );
@@ -140,6 +140,9 @@ final class WPSiteMonitor {
 
     public function activate() {
         WPSM_Settings::init_options();
+
+        // Clean up any orphaned hooks from old versions.
+        wp_clear_scheduled_hook( 'wpsm_daily_site_check' );
 
         // Hourly: run health checks, send alerts if problems found.
         if ( ! wp_next_scheduled( 'wpsm_hourly_checks' ) ) {
