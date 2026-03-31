@@ -13,14 +13,24 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 delete_option( 'wpsm_settings' );
 delete_option( 'wpsm_recent_alerts' );
 
+// --- Remove scheduled cron jobs ---
+wp_clear_scheduled_hook( 'wpsm_hourly_checks' );
+wp_clear_scheduled_hook( 'wpsm_daily_health_report' );
+wp_clear_scheduled_hook( 'wpsm_daily_site_check' ); // legacy
+
 // --- Remove watchdog mu-plugin ---
 $watchdog = trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php';
 if ( file_exists( $watchdog ) ) {
     unlink( $watchdog );
 }
 
-// --- Remove lock file ---
-$lock = trailingslashit( WP_CONTENT_DIR ) . '.wpsm-watchdog.lock';
-if ( file_exists( $lock ) ) {
-    unlink( $lock );
+// --- Remove lock files ---
+$lock_watchdog = trailingslashit( WP_CONTENT_DIR ) . '.wpsm-watchdog.lock';
+if ( file_exists( $lock_watchdog ) ) {
+    unlink( $lock_watchdog );
+}
+
+$lock_shutdown = trailingslashit( WP_CONTENT_DIR ) . '.wpsm-shutdown.lock';
+if ( file_exists( $lock_shutdown ) ) {
+    unlink( $lock_shutdown );
 }
