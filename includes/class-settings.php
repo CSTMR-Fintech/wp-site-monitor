@@ -25,6 +25,21 @@ class WPSM_Settings {
         add_action( 'admin_post_wpsm_trigger_check', array( $this, 'handle_trigger_check' ) );
         add_action( 'admin_post_wpsm_trigger_daily', array( $this, 'handle_trigger_daily' ) );
         add_action( 'admin_post_wpsm_clear_alerts', array( $this, 'handle_clear_alerts' ) );
+        add_action( 'admin_post_wpsm_regenerate_api_key', array( $this, 'handle_regenerate_api_key' ) );
+
+        // Hide plugin from the plugins list for non-admins.
+        add_filter( 'all_plugins', array( $this, 'hide_from_non_admins' ) );
+    }
+
+    /**
+     * Remove this plugin from the plugins list for any user without manage_options.
+     * Admins still see it and can deactivate/update normally.
+     */
+    public function hide_from_non_admins( $plugins ) {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            unset( $plugins[ plugin_basename( WPSM_PLUGIN_FILE ) ] );
+        }
+        return $plugins;
     }
 
     public static function init_options() {
@@ -69,8 +84,8 @@ class WPSM_Settings {
 
         // --- Notifications ---
         add_settings_section( 'wpsm_notifications_section', 'Notifications', '__return_false', 'wpsm-settings' );
-        add_settings_field( 'slack_webhook_url', 'Slack Webhook URL', array( $this, 'render_text_field' ), 'wpsm-settings', 'wpsm_notifications_section', array( 'label_for' => 'slack_webhook_url', 'desc' => 'Incoming Webhook URL from your Slack app.' ) );
-        add_settings_field( 'generic_webhook_url', 'Generic Webhook URL', array( $this, 'render_text_field' ), 'wpsm-settings', 'wpsm_notifications_section', array( 'label_for' => 'generic_webhook_url', 'desc' => 'Optional. Receives structured JSON payloads for external apps.' ) );
+        add_settings_field( 'slack_webhook_url', 'Slack Webhook URL', array( $this, 'render_secret_field' ), 'wpsm-settings', 'wpsm_notifications_section', array( 'label_for' => 'slack_webhook_url', 'desc' => 'Incoming Webhook URL from your Slack app.' ) );
+        add_settings_field( 'generic_webhook_url', 'Generic Webhook URL', array( $this, 'render_secret_field' ), 'wpsm-settings', 'wpsm_notifications_section', array( 'label_for' => 'generic_webhook_url', 'desc' => 'Optional. Receives structured JSON payloads for external apps.' ) );
         add_settings_field( 'alert_levels', 'Real-time Alert Levels', array( $this, 'render_alert_levels' ), 'wpsm-settings', 'wpsm_notifications_section' );
 
         // --- General ---
@@ -135,6 +150,18 @@ class WPSM_Settings {
         exit;
     }
 
+    public function handle_regenerate_api_key() {
+        check_admin_referer( 'wpsm_regenerate_api_key' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'Unauthorized.' );
+        }
+        $settings            = self::get_settings();
+        $settings['api_key'] = wp_generate_password( 32, false, false );
+        update_option( 'wpsm_settings', $settings );
+        wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => 'regenerated' ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
     // -------------------------------------------------------------------------
     // Render
     // -------------------------------------------------------------------------
@@ -148,9 +175,10 @@ class WPSM_Settings {
                 <div class="notice notice-success is-dismissible"><p>
                     <?php
                     $ran = sanitize_key( $_GET['wpsm_ran'] );
-                    if ( 'checks' === $ran )        echo 'Health checks executed. Any issues found were sent to Slack.';
-                    elseif ( 'daily' === $ran )      echo 'Daily health report sent to Slack.';
-                    elseif ( 'cleared' === $ran )    echo 'Alert log cleared.';
+                    if ( 'checks' === $ran )           echo 'Health checks executed. Any issues found were sent to Slack.';
+                    elseif ( 'daily' === $ran )         echo 'Daily health report sent to Slack.';
+                    elseif ( 'cleared' === $ran )       echo 'Alert log cleared.';
+                    elseif ( 'regenerated' === $ran )   echo 'API key regenerated. Update any apps using the previous key.';
                     ?>
                 </p></div>
             <?php endif; ?>
@@ -222,6 +250,42 @@ class WPSM_Settings {
         }
     }
 
+    public function render_secret_field( $args ) {
+        $settings = self::get_settings();
+        $id       = $args['label_for'];
+        $value    = isset( $settings[ $id ] ) ? $settings[ $id ] : '';
+        $desc     = isset( $args['desc'] ) ? $args['desc'] : '';
+        $uid      = 'wpsm-secret-' . esc_attr( $id );
+
+        // Show last 10 chars as hint if a value is already set.
+        $hint = $value ? '••••••••••••••••••••' . substr( $value, -10 ) : '';
+        ?>
+        <div style="display:flex;gap:8px;align-items:center;max-width:560px">
+            <input
+                type="password"
+                id="<?php echo esc_attr( $uid ); ?>"
+                name="wpsm_settings[<?php echo esc_attr( $id ); ?>]"
+                value="<?php echo esc_attr( $value ); ?>"
+                class="regular-text"
+                style="font-family:monospace;flex:1"
+                autocomplete="off"
+            />
+            <button type="button" class="button"
+                onclick="(function(btn){
+                    var inp = document.getElementById('<?php echo esc_js( $uid ); ?>');
+                    if(inp.type==='password'){inp.type='text';btn.textContent='Hide';}
+                    else{inp.type='password';btn.textContent='Show';}
+                })(this)">Show</button>
+        </div>
+        <?php if ( $hint ) : ?>
+            <p class="description" style="font-family:monospace;margin-top:4px"><?php echo esc_html( $hint ); ?></p>
+        <?php endif; ?>
+        <?php if ( $desc ) : ?>
+            <p class="description"><?php echo esc_html( $desc ); ?></p>
+        <?php endif; ?>
+        <?php
+    }
+
     public function render_number_field( $args ) {
         $settings = self::get_settings();
         $id       = $args['label_for'];
@@ -280,9 +344,21 @@ class WPSM_Settings {
 
     public function render_api_key() {
         $api_key = self::get_api_key();
+        $regen_url = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_regenerate_api_key' ), 'wpsm_regenerate_api_key' );
         ?>
-        <input type="text" class="regular-text" name="wpsm_settings[api_key]" value="<?php echo esc_attr( $api_key ); ?>" />
-        <p class="description">Use this key in the <code>x-wpsm-api-key</code> request header or <code>?api_key=</code> query parameter.</p>
+        <div style="display:flex;gap:8px;align-items:center;max-width:500px">
+            <input type="text" id="wpsm-api-key" class="regular-text" value="<?php echo esc_attr( $api_key ); ?>" readonly style="font-family:monospace;flex:1" />
+            <button type="button" class="button"
+                onclick="navigator.clipboard.writeText(document.getElementById('wpsm-api-key').value).then(function(){var b=this;b.textContent='Copied!';setTimeout(function(){b.textContent='Copy'},2000)}.bind(this))">
+                Copy
+            </button>
+            <a href="<?php echo esc_url( $regen_url ); ?>"
+               class="button"
+               onclick="return confirm('Regenerate the API key? All apps using the current key will stop working until updated.')">
+                Regenerate
+            </a>
+        </div>
+        <p class="description">Send this key in the <code>x-wpsm-api-key</code> request header or <code>?api_key=</code> query param. Never expose it publicly.</p>
         <?php
     }
 

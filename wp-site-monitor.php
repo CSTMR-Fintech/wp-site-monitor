@@ -3,8 +3,8 @@
  * Plugin Name: WP Site Monitor
  * Plugin URI:  https://cstmr.com
  * Description: Monitors security, performance, updates and site health. Slack alerts and REST API included.
- * Version:     1.0.0
- * Author:      Auto-generated
+ * Version:     1.1.0
+ * Author:      CSTMR
  * Author URI:  https://ctsmr.com
  * Text Domain: wp-site-monitor
  * Domain Path: /languages
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'WPSM_VERSION' ) ) {
-    define( 'WPSM_VERSION', '1.0.0' );
+    define( 'WPSM_VERSION', '1.1.0' );
 }
 
 define( 'WPSM_PLUGIN_FILE', __FILE__ );
@@ -97,10 +97,25 @@ final class WPSiteMonitor {
     }
 
     public function init_classes() {
-        WPSM_Settings::instance();
+        // Monitor and API run for everyone (cron + REST requests have no current user).
         WPSM_Monitor::instance();
         WPSM_API::instance();
         WPSM_Notifier::instance();
+
+        // Settings UI only loads for admins in the WP admin area.
+        if ( is_admin() && current_user_can( 'manage_options' ) ) {
+            WPSM_Settings::instance();
+        } elseif ( ! is_admin() ) {
+            // On the front-end there's no current user yet at plugins_loaded,
+            // so we defer the settings init to init where user is available.
+            add_action( 'init', array( $this, 'maybe_init_settings' ), 1 );
+        }
+    }
+
+    public function maybe_init_settings() {
+        if ( current_user_can( 'manage_options' ) ) {
+            WPSM_Settings::instance();
+        }
     }
 
     public function activate() {
