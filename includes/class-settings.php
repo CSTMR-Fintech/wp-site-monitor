@@ -52,6 +52,7 @@ class WPSM_Settings {
             'check_interval'      => WPSM_DEFAULT_CHECK_INTERVAL,
             'max_stored_alerts'   => 100,
             'api_key'             => wp_generate_password( 32, false, false ),
+            'daily_report_hour'   => 8,
         );
 
         add_option( 'wpsm_settings', $defaults );
@@ -69,6 +70,16 @@ class WPSM_Settings {
     public static function get_max_stored_alerts() {
         $settings = self::get_settings();
         return isset( $settings['max_stored_alerts'] ) ? absint( $settings['max_stored_alerts'] ) : 100;
+    }
+
+    public static function next_daily_report_timestamp( $time = '08:00' ) {
+        $tz   = wp_timezone();
+        $now  = new DateTime( 'now', $tz );
+        $next = new DateTime( 'today ' . $time . ':00', $tz );
+        if ( $next <= $now ) {
+            $next->modify( '+1 day' );
+        }
+        return $next->getTimestamp();
     }
 
     public function register_settings_page() {
@@ -94,6 +105,7 @@ class WPSM_Settings {
         add_settings_section( 'wpsm_general_section', 'General', '__return_false', 'wpsm-settings' );
         add_settings_field( 'check_interval', 'Check Interval (seconds)', array( $this, 'render_number_field' ), 'wpsm-settings', 'wpsm_general_section', array( 'label_for' => 'check_interval', 'desc' => 'How often to run scheduled checks. Default: 3600 (1 hour).' ) );
         add_settings_field( 'max_stored_alerts', 'Max Stored Alerts', array( $this, 'render_max_alerts' ), 'wpsm-settings', 'wpsm_general_section' );
+        add_settings_field( 'daily_report_hour', 'Daily Report Time', array( $this, 'render_daily_report_hour' ), 'wpsm-settings', 'wpsm_general_section' );
 
         // --- API ---
         add_settings_section( 'wpsm_api_section', 'REST API', '__return_false', 'wpsm-settings' );
@@ -114,6 +126,17 @@ class WPSM_Settings {
 
         $raw_levels                = isset( $input['alert_levels'] ) ? (array) $input['alert_levels'] : array();
         $sanitized['alert_levels'] = array_values( array_intersect( $raw_levels, array( 'critical', 'warning', 'info' ) ) );
+
+        $raw_time = isset( $input['daily_report_hour'] ) ? sanitize_text_field( $input['daily_report_hour'] ) : '08:00';
+        $sanitized['daily_report_hour'] = preg_match( '/^\d{2}:\d{2}$/', $raw_time ) ? $raw_time : '08:00';
+
+        // Reschedule daily report if time changed.
+        $old_settings = self::get_settings();
+        $old_time     = isset( $old_settings['daily_report_hour'] ) ? $old_settings['daily_report_hour'] : '08:00';
+        if ( $sanitized['daily_report_hour'] !== $old_time ) {
+            wp_clear_scheduled_hook( 'wpsm_daily_health_report' );
+            wp_schedule_event( self::next_daily_report_timestamp( $sanitized['daily_report_hour'] ), 'daily', 'wpsm_daily_health_report' );
+        }
 
         return $sanitized;
     }
@@ -401,6 +424,18 @@ class WPSM_Settings {
         }
         echo '</select>';
         echo '<p class="description">How many alert events to keep in the local log. Older entries are automatically pruned.</p>';
+    }
+
+    public function render_daily_report_hour() {
+        $settings = self::get_settings();
+        $current  = isset( $settings['daily_report_hour'] ) ? $settings['daily_report_hour'] : '08:00';
+        $tz_label = wp_timezone_string();
+
+        printf(
+            '<input type="time" name="wpsm_settings[daily_report_hour]" value="%s" />',
+            esc_attr( $current )
+        );
+        echo '<p class="description">Time to send the daily health report to Slack. Timezone: <strong>' . esc_html( $tz_label ) . '</strong>.</p>';
     }
 
     public function render_api_key() {
