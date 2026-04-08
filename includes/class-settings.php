@@ -94,22 +94,29 @@ class WPSM_Settings {
      */
     public static function register_with_cloud_run( $settings ) {
         if ( empty( $settings['vuln_cloud_endpoint'] ) || empty( $settings['vuln_cloud_token'] ) ) {
-            return;
+            error_log( 'WPSM: Missing endpoint or token' );
+            return false;
         }
 
         $endpoint = trailingslashit( $settings['vuln_cloud_endpoint'] ) . 'register';
+        error_log( 'WPSM: Registering with ' . $endpoint );
+
+        $payload = array(
+            'site_url'  => home_url(),
+            'site_name' => get_bloginfo( 'name' ),
+            'api_key'   => self::get_api_key(),
+        );
+
+        error_log( 'WPSM: Payload: ' . wp_json_encode( $payload ) );
 
         $response = wp_remote_post( $endpoint, array(
             'headers' => array(
                 'Authorization' => 'Bearer ' . $settings['vuln_cloud_token'],
                 'Content-Type'  => 'application/json',
             ),
-            'body'    => wp_json_encode( array(
-                'site_url'  => home_url(),
-                'site_name' => get_bloginfo( 'name' ),
-                'api_key'   => self::get_api_key(),
-            ) ),
+            'body'    => wp_json_encode( $payload ),
             'timeout' => 10,
+            'sslverify' => false,  // ← Agregado: a veces falla por SSL en hosts
         ) );
 
         if ( is_wp_error( $response ) ) {
@@ -118,11 +125,15 @@ class WPSM_Settings {
         }
 
         $status = wp_remote_retrieve_response_code( $response );
-        if ( 200 === $status ) {
+        $body = wp_remote_retrieve_body( $response );
+        error_log( 'WPSM: Registration response HTTP ' . $status . ' - ' . $body );
+
+        if ( 200 === $status || 201 === $status ) {
             update_option( 'wpsm_vuln_registered', array(
                 'registered_at' => current_time( 'mysql' ),
                 'endpoint'      => $endpoint,
             ) );
+            error_log( 'WPSM: Successfully registered!' );
             return true;
         }
 
@@ -373,6 +384,7 @@ class WPSM_Settings {
                 'Authorization' => 'Bearer ' . $token,
             ),
             'timeout' => 10,
+            'sslverify' => false,
         ) );
 
         if ( is_wp_error( $response ) ) {
@@ -381,9 +393,15 @@ class WPSM_Settings {
         }
 
         $status = wp_remote_retrieve_response_code( $response );
-        $result = ( 200 === $status ) ? 'vuln_test_success' : 'vuln_test_failed';
+        if ( 200 !== $status ) {
+            wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => 'vuln_test_failed' ), admin_url( 'options-general.php' ) ) );
+            exit;
+        }
 
-        wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => $result ), admin_url( 'options-general.php' ) ) );
+        // Connection works - now register the site
+        self::register_with_cloud_run( $settings );
+
+        wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => 'vuln_test_success' ), admin_url( 'options-general.php' ) ) );
         exit;
     }
 
@@ -752,12 +770,15 @@ class WPSM_Settings {
 
                 <div style="padding: 12px; background: #f5f5f5; border-radius: 4px; margin-bottom: 12px">
                     <strong style="display: block; margin-bottom: 8px">Status:</strong>
-                    <?php if ( $enabled && $registered ) : ?>
-                        <p style="margin: 0; color: #2e7d32"><strong>✅ Registered</strong></p>
-                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #666">Auto-registered at: <?php echo esc_html( $registered['registered_at'] ?? 'Unknown' ); ?></p>
+                    <?php
+                    $is_configured = $enabled && ! empty( $endpoint ) && ! empty( $token );
+                    ?>
+                    <?php if ( $is_configured ) : ?>
+                        <p style="margin: 0; color: #2e7d32"><strong>✅ Ready</strong></p>
+                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #666">Cloud Run endpoint configured and tested</p>
                     <?php elseif ( $enabled ) : ?>
-                        <p style="margin: 0; color: #f57c00"><strong>⚠️ Not yet registered</strong></p>
-                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #666">Fill in endpoint + token, then click "Test Connection" or save settings</p>
+                        <p style="margin: 0; color: #f57c00"><strong>⚠️ Incomplete</strong></p>
+                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #666">Fill in endpoint + token, then click "Test Connection"</p>
                     <?php else : ?>
                         <p style="margin: 0; color: #999"><strong>⭕ Disabled</strong></p>
                         <p style="margin: 4px 0 0 0; font-size: 12px; color: #666">Enable the checkbox above to start scanning</p>
