@@ -28,6 +28,8 @@ class WPSM_Settings {
         add_action( 'admin_post_wpsm_regenerate_api_key', array( $this, 'handle_regenerate_api_key' ) );
         add_action( 'admin_post_wpsm_install_watchdog', array( $this, 'handle_install_watchdog' ) );
         add_action( 'admin_post_wpsm_uninstall_watchdog', array( $this, 'handle_uninstall_watchdog' ) );
+        add_action( 'admin_post_wpsm_vuln_test_connection', array( $this, 'handle_vuln_test_connection' ) );
+        add_action( 'admin_post_wpsm_vuln_register', array( $this, 'handle_vuln_register' ) );
 
         // Hide plugin from the plugins list for non-admins.
         add_filter( 'all_plugins', array( $this, 'hide_from_non_admins' ) );
@@ -349,6 +351,42 @@ class WPSM_Settings {
         exit;
     }
 
+    public function handle_vuln_test_connection() {
+        check_admin_referer( 'wpsm_vuln_test_connection' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'Unauthorized.' );
+        }
+
+        $settings = self::get_settings();
+        $endpoint = isset( $settings['vuln_cloud_endpoint'] ) ? $settings['vuln_cloud_endpoint'] : '';
+        $token = isset( $settings['vuln_cloud_token'] ) ? $settings['vuln_cloud_token'] : '';
+
+        if ( ! $endpoint || ! $token ) {
+            wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => 'vuln_test_failed' ), admin_url( 'options-general.php' ) ) );
+            exit;
+        }
+
+        // Test /health endpoint
+        $test_url = trailingslashit( $endpoint ) . 'health';
+        $response = wp_remote_get( $test_url, array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $token,
+            ),
+            'timeout' => 10,
+        ) );
+
+        if ( is_wp_error( $response ) ) {
+            wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => 'vuln_test_failed' ), admin_url( 'options-general.php' ) ) );
+            exit;
+        }
+
+        $status = wp_remote_retrieve_response_code( $response );
+        $result = ( 200 === $status ) ? 'vuln_test_success' : 'vuln_test_failed';
+
+        wp_redirect( add_query_arg( array( 'page' => 'wpsm-settings', 'wpsm_ran' => $result ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
     private function get_watchdog_status() {
         $dest          = trailingslashit( WPMU_PLUGIN_DIR ) . 'wpsm-watchdog.php';
         $is_installed  = file_exists( $dest );
@@ -377,18 +415,38 @@ class WPSM_Settings {
             <h1>WP Site Monitor</h1>
 
             <?php if ( isset( $_GET['wpsm_ran'] ) ) : ?>
-                <div class="notice notice-success is-dismissible"><p>
-                    <?php
-                    $ran = sanitize_key( $_GET['wpsm_ran'] );
-                    if ( 'checks' === $ran )           echo 'Health checks executed. Any issues found were sent to Slack.';
-                    elseif ( 'daily' === $ran )         echo 'Daily health report sent to Slack.';
-                    elseif ( 'cleared' === $ran )       echo 'Alert log cleared.';
-                    elseif ( 'regenerated' === $ran )        echo 'API key regenerated. Update any apps using the previous key.';
-                    elseif ( 'watchdog_installed' === $ran ) echo 'Watchdog installed successfully. Fatal errors will now trigger Slack alerts even if the main plugin crashes.';
-                    elseif ( 'watchdog_removed' === $ran )   echo 'Watchdog removed.';
-                    elseif ( 'watchdog_error' === $ran )     echo 'Could not copy the watchdog file. Check that WordPress has write permissions to the mu-plugins directory.';
-                    ?>
-                </p></div>
+                <?php
+                $ran = sanitize_key( $_GET['wpsm_ran'] );
+                $notice_class = 'notice-success';
+                $notice_text = '';
+
+                if ( 'checks' === $ran ) {
+                    $notice_text = 'Health checks executed. Any issues found were sent to Slack.';
+                } elseif ( 'daily' === $ran ) {
+                    $notice_text = 'Daily health report sent to Slack.';
+                } elseif ( 'cleared' === $ran ) {
+                    $notice_text = 'Alert log cleared.';
+                } elseif ( 'regenerated' === $ran ) {
+                    $notice_text = 'API key regenerated. Update any apps using the previous key.';
+                } elseif ( 'watchdog_installed' === $ran ) {
+                    $notice_text = 'Watchdog installed successfully. Fatal errors will now trigger Slack alerts even if the main plugin crashes.';
+                } elseif ( 'watchdog_removed' === $ran ) {
+                    $notice_text = 'Watchdog removed.';
+                } elseif ( 'watchdog_error' === $ran ) {
+                    $notice_class = 'notice-error';
+                    $notice_text = 'Could not copy the watchdog file. Check that WordPress has write permissions to the mu-plugins directory.';
+                } elseif ( 'vuln_test_success' === $ran ) {
+                    $notice_text = '✅ Cloud Run connection successful! Your endpoint is reachable.';
+                } elseif ( 'vuln_test_failed' === $ran ) {
+                    $notice_class = 'notice-error';
+                    $notice_text = '❌ Cloud Run connection failed. Check your endpoint URL and bearer token.';
+                }
+
+                if ( $notice_text ) : ?>
+                    <div class="notice <?php echo esc_attr( $notice_class ); ?> is-dismissible"><p>
+                        <?php echo wp_kses_post( $notice_text ); ?>
+                    </p></div>
+                <?php endif; ?>
             <?php endif; ?>
 
             <form method="post" action="options.php">
@@ -661,57 +719,78 @@ class WPSM_Settings {
         $endpoint  = isset( $settings['vuln_cloud_endpoint'] ) ? $settings['vuln_cloud_endpoint'] : '';
         $token     = isset( $settings['vuln_cloud_token'] ) ? $settings['vuln_cloud_token'] : '';
         $registered = get_option( 'wpsm_vuln_registered' );
+        $test_url = wp_nonce_url( admin_url( 'admin-post.php?action=wpsm_vuln_test_connection' ), 'wpsm_vuln_test_connection' );
         ?>
-        <fieldset style="border: 1px solid #ddd; padding: 12px; margin-bottom: 12px; background: #f9f9f9; max-width: 640px">
-            <legend style="padding: 0 8px; font-weight: 600">Vulnerability Scanning Configuration</legend>
+        <fieldset style="border: 1px solid #ddd; padding: 12px; margin-bottom: 12px; background: #f9f9f9; max-width: 800px">
+            <legend style="padding: 0 8px; font-weight: 600">🔐 Vulnerability Scanning (Wordfence)</legend>
 
             <label style="display: block; margin-bottom: 12px">
                 <input type="checkbox" name="wpsm_settings[vuln_scanning_enabled]" value="1" <?php checked( $enabled ); ?> />
                 <strong>Enable vulnerability scanning</strong>
             </label>
 
-            <div style="display: <?php echo $enabled ? 'block' : 'none'; ?>; margin-left: 20px; margin-bottom: 12px">
-                <label style="display: block; margin-bottom: 8px">
-                    <strong>Cloud Run Endpoint:</strong>
-                    <input type="url" name="wpsm_settings[vuln_cloud_endpoint]" value="<?php echo esc_attr( $endpoint ); ?>" placeholder="https://your-service.run.app" class="regular-text" style="max-width: 400px" />
-                    <p class="description" style="margin-top: 4px">URL of your Cloud Run service that checks for vulnerabilities.</p>
-                </label>
+            <div id="wpsm-vuln-config" style="display: <?php echo $enabled ? 'block' : 'none'; ?>; margin-left: 20px; padding: 12px; background: white; border: 1px solid #e0e0e0; border-radius: 4px; margin-bottom: 12px">
 
-                <label style="display: block; margin-bottom: 8px">
-                    <strong>Cloud Run Bearer Token:</strong>
-                    <div style="display: flex; gap: 8px; max-width: 400px">
+                <div style="margin-bottom: 12px">
+                    <label style="display: block; margin-bottom: 4px">
+                        <strong>Cloud Run Endpoint URL:</strong>
+                    </label>
+                    <input type="url" name="wpsm_settings[vuln_cloud_endpoint]" value="<?php echo esc_attr( $endpoint ); ?>" placeholder="https://your-service.run.app" class="regular-text" style="max-width: 500px; margin-bottom: 4px" />
+                    <p class="description" style="margin: 4px 0">https://wpsm-cloud-run-xxxxx.run.app</p>
+                </div>
+
+                <div style="margin-bottom: 12px">
+                    <label style="display: block; margin-bottom: 4px">
+                        <strong>Cloud Run Bearer Token:</strong>
+                    </label>
+                    <div style="display: flex; gap: 8px; max-width: 500px">
                         <input type="password" id="wpsm-vuln-token" name="wpsm_settings[vuln_cloud_token]" value="<?php echo esc_attr( $token ); ?>" class="regular-text" style="font-family: monospace; flex: 1" autocomplete="off" />
                         <button type="button" class="button" onclick="(function(btn){var inp = document.getElementById('wpsm-vuln-token'); if(inp.type==='password'){inp.type='text';btn.textContent='Hide';}else{inp.type='password';btn.textContent='Show';}})(this)">Show</button>
                     </div>
-                    <p class="description" style="margin-top: 4px">Bearer token shared with Cloud Run for authentication.</p>
-                </label>
+                    <p class="description" style="margin: 4px 0">Same token you set in Cloud Run environment variables</p>
+                </div>
 
-                <?php if ( $registered ) : ?>
-                    <p style="margin-top: 12px; padding: 8px; background: #e8f5e9; border-left: 4px solid #4caf50">
-                        ✅ <strong>Registered</strong> — Last scan: <?php echo esc_html( $registered['registered_at'] ?? 'Never' ); ?>
-                    </p>
-                <?php else : ?>
-                    <p style="margin-top: 12px; padding: 8px; background: #fff3cd; border-left: 4px solid #ff9800">
-                        ⚠️ <strong>Not registered</strong> — Save settings to register this site.
-                    </p>
+                <div style="padding: 12px; background: #f5f5f5; border-radius: 4px; margin-bottom: 12px">
+                    <strong style="display: block; margin-bottom: 8px">Status:</strong>
+                    <?php if ( $enabled && $registered ) : ?>
+                        <p style="margin: 0; color: #2e7d32"><strong>✅ Registered</strong></p>
+                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #666">Auto-registered at: <?php echo esc_html( $registered['registered_at'] ?? 'Unknown' ); ?></p>
+                    <?php elseif ( $enabled ) : ?>
+                        <p style="margin: 0; color: #f57c00"><strong>⚠️ Not yet registered</strong></p>
+                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #666">Fill in endpoint + token, then click "Test Connection" or save settings</p>
+                    <?php else : ?>
+                        <p style="margin: 0; color: #999"><strong>⭕ Disabled</strong></p>
+                        <p style="margin: 4px 0 0 0; font-size: 12px; color: #666">Enable the checkbox above to start scanning</p>
+                    <?php endif; ?>
+                </div>
+
+                <?php if ( $enabled && ( $endpoint || $token ) ) : ?>
+                    <div style="margin-top: 12px">
+                        <a href="<?php echo esc_url( $test_url ); ?>" class="button button-secondary" style="margin-right: 8px">
+                            🔍 Test Connection
+                        </a>
+                        <span class="description">Verify Cloud Run endpoint is reachable with your token</span>
+                    </div>
                 <?php endif; ?>
             </div>
 
-            <p class="description" style="margin-top: 12px">
-                When enabled, your site registers with the central Cloud Run service.<br/>
-                Cloud Run checks your installed plugins daily against the Wordfence Intelligence database<br/>
-                and sends consolidated Slack alerts for critical vulnerabilities (CVSS ≥ 8).
+            <p class="description" style="margin: 12px 0 0 0; line-height: 1.6">
+                <strong>How it works:</strong><br/>
+                1. Fill in your Cloud Run endpoint URL and bearer token<br/>
+                2. Click "Test Connection" to verify settings<br/>
+                3. Save settings to auto-register this site<br/>
+                4. Cloud Run will check your plugins daily against Wordfence and send Slack alerts for critical vulnerabilities (CVSS ≥ 8)
             </p>
         </fieldset>
 
         <script type="text/javascript">
             (function() {
                 const checkbox = document.querySelector('input[name="wpsm_settings[vuln_scanning_enabled]"]');
-                const block = document.querySelector('div[style*="display: block; margin-left: 20px"]');
+                const configBlock = document.getElementById('wpsm-vuln-config');
 
-                if ( checkbox && block ) {
+                if ( checkbox && configBlock ) {
                     checkbox.addEventListener( 'change', function() {
-                        block.style.display = this.checked ? 'block' : 'none';
+                        configBlock.style.display = this.checked ? 'block' : 'none';
                     } );
                 }
             })();
