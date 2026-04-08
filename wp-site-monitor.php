@@ -3,7 +3,7 @@
  * Plugin Name: WP Site Monitor
  * Plugin URI:  https://cstmr.com
  * Description: Monitors security, performance, updates and site health. Slack alerts and REST API included.
- * Version:     1.4.2
+ * Version:     1.5.0
  * Author:      CSTMR
  * Author URI:  https://ctsmr.com
  * Text Domain: wp-site-monitor
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'WPSM_VERSION' ) ) {
-    define( 'WPSM_VERSION', '1.4.2' );
+    define( 'WPSM_VERSION', '1.5.0' );
 }
 
 define( 'WPSM_PLUGIN_FILE', __FILE__ );
@@ -143,28 +143,33 @@ final class WPSiteMonitor {
 
         // Clean up any orphaned hooks from old versions.
         wp_clear_scheduled_hook( 'wpsm_daily_site_check' );
+        wp_clear_scheduled_hook( 'wpsm_daily_health_report' );  // Migrate away from daily cron.
 
         // Hourly: run health checks, send alerts if problems found.
         if ( ! wp_next_scheduled( 'wpsm_hourly_checks' ) ) {
             wp_schedule_event( time(), 'hourly', 'wpsm_hourly_checks' );
         }
 
-        // Daily: send a health summary report to Slack at the configured hour.
-        if ( ! wp_next_scheduled( 'wpsm_daily_health_report' ) ) {
-            $settings = WPSM_Settings::get_settings();
-            $time = isset( $settings['daily_report_hour'] ) ? $settings['daily_report_hour'] : '08:00';
-            wp_schedule_event( WPSM_Settings::next_daily_report_timestamp( $time ), 'daily', 'wpsm_daily_health_report' );
+        // Hourly: check if health report should be sent based on flexible schedule settings.
+        if ( ! wp_next_scheduled( 'wpsm_report_check' ) ) {
+            wp_schedule_event( time(), 'hourly', 'wpsm_report_check' );
         }
     }
 
     public function deactivate() {
         wp_clear_scheduled_hook( 'wpsm_hourly_checks' );
-        wp_clear_scheduled_hook( 'wpsm_daily_health_report' );
+        wp_clear_scheduled_hook( 'wpsm_report_check' );
+
+        // If vulnerability scanning was enabled, unregister from Cloud Run.
+        $settings = WPSM_Settings::get_settings();
+        if ( ! empty( $settings['vuln_scanning_enabled'] ) ) {
+            WPSM_Settings::unregister_from_cloud_run( $settings );
+        }
     }
 
     public function bind_cron_actions() {
         add_action( 'wpsm_hourly_checks', array( WPSM_Monitor::instance(), 'run_scheduled_checks' ) );
-        add_action( 'wpsm_daily_health_report', array( 'WPSM_Notifier', 'send_daily_health_report' ) );
+        add_action( 'wpsm_report_check', array( 'WPSM_Notifier', 'maybe_send_report' ) );
     }
 }
 

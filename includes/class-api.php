@@ -33,6 +33,13 @@ class WPSM_API {
             'permission_callback' => array( $this, 'verify_api_key' ),
         ) );
 
+        // GET /wp-json/wp-site-monitor/v1/inventory — plugins, themes, core versions.
+        register_rest_route( $namespace, '/inventory', array(
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => array( $this, 'get_site_inventory' ),
+            'permission_callback' => array( $this, 'verify_api_key' ),
+        ) );
+
         // GET /wp-json/wp-site-monitor/v1/alerts — recent alerts, filterable.
         register_rest_route( $namespace, '/alerts', array(
             'methods'             => WP_REST_Server::READABLE,
@@ -132,6 +139,47 @@ class WPSM_API {
         );
 
         return rest_ensure_response( $status );
+    }
+
+    /**
+     * GET /inventory
+     * Returns detailed list of installed plugins, themes, and core version.
+     * Used by Cloud Run to check for vulnerabilities.
+     */
+    public function get_site_inventory( WP_REST_Request $request ) {
+        include_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+        $all_plugins    = get_plugins();
+        $active_plugins = get_option( 'active_plugins', array() );
+        $plugins        = array();
+
+        foreach ( $all_plugins as $file => $data ) {
+            $slug = dirname( $file );
+            if ( '.' === $slug ) {
+                $slug = basename( $file, '.php' );
+            }
+
+            $plugins[] = array(
+                'slug'    => $slug,
+                'name'    => $data['Name'] ?? 'Unknown',
+                'version' => $data['Version'] ?? '0.0.0',
+                'active'  => in_array( $file, $active_plugins, true ),
+            );
+        }
+
+        return rest_ensure_response( array(
+            'site'  => array(
+                'name' => get_bloginfo( 'name' ),
+                'url'  => home_url(),
+            ),
+            'core'  => get_bloginfo( 'version' ),
+            'plugins' => $plugins,
+            'theme' => array(
+                'slug'    => get_stylesheet(),
+                'name'    => wp_get_theme()->get( 'Name' ) ?? 'Unknown',
+                'version' => wp_get_theme()->get( 'Version' ) ?? '0.0.0',
+            ),
+        ) );
     }
 
     /**

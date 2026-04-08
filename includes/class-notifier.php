@@ -11,6 +11,71 @@ class WPSM_Notifier {
     }
 
     /**
+     * Check if the report should be sent based on schedule settings.
+     * Called hourly by wpsm_report_check cron.
+     * Performs all verifications before sending the daily health report.
+     */
+    public static function maybe_send_report() {
+        if ( ! class_exists( 'WPSM_Settings' ) ) {
+            return;
+        }
+
+        $settings = WPSM_Settings::get_settings();
+        $type     = isset( $settings['report_schedule_type'] ) ? $settings['report_schedule_type'] : 'weekly_days';
+        $time_cfg = isset( $settings['report_time'] ) ? $settings['report_time'] : '08:00';
+        $tz_cfg   = isset( $settings['report_timezone'] ) ? $settings['report_timezone'] : 'site';
+
+        // 1. Verify we're within the configured time window (±30 min tolerance for WP pseudo-cron).
+        // Use the configured timezone, or fall back to site timezone.
+        if ( 'site' === $tz_cfg ) {
+            $tz = wp_timezone();
+        } else {
+            try {
+                $tz = new DateTimeZone( $tz_cfg );
+            } catch ( Exception $e ) {
+                $tz = wp_timezone();  // Fallback to site timezone if invalid
+            }
+        }
+
+        $now    = new DateTime( 'now', $tz );
+        $target = new DateTime( 'today ' . $time_cfg . ':00', $tz );
+        $diff   = abs( $now->getTimestamp() - $target->getTimestamp() );
+
+        if ( $diff > 1800 ) {
+            return;  // Not in the ±30 min window
+        }
+
+        // 2. Anti-duplicate: don't send if already sent in the last 20 hours.
+        $last_sent = (int) get_option( 'wpsm_report_last_sent', 0 );
+        if ( ( time() - $last_sent ) < 20 * HOUR_IN_SECONDS ) {
+            return;
+        }
+
+        // 3. Verify schedule type conditions.
+        if ( 'interval' === $type ) {
+            // Fixed interval mode: check if enough days have elapsed.
+            $days = (int) ( isset( $settings['report_interval_days'] ) ? $settings['report_interval_days'] : 7 );
+            if ( ( time() - $last_sent ) < $days * DAY_IN_SECONDS ) {
+                return;
+            }
+        } else {
+            // Weekly days mode: check if today is in the allowed days list.
+            $allowed_days = array_map(
+                'intval',
+                (array) ( isset( $settings['report_days_of_week'] ) ? $settings['report_days_of_week'] : array( 1, 2, 3, 4, 5 ) )
+            );
+            $today_iso = (int) $now->format( 'N' );  // 1=Mon...7=Sun (ISO 8601)
+            if ( ! in_array( $today_iso, $allowed_days, true ) ) {
+                return;
+            }
+        }
+
+        // 4. All checks passed — send the report and update the timestamp.
+        update_option( 'wpsm_report_last_sent', time() );
+        self::send_daily_health_report();
+    }
+
+    /**
      * Send a monitored alert: stores it and notifies via Slack/webhook.
      *
      * @param string $level   'critical' | 'warning' | 'info'

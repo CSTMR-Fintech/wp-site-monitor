@@ -46,13 +46,20 @@ class WPSM_Settings {
 
     public static function init_options() {
         $defaults = array(
-            'slack_webhook_url'   => '',
-            'generic_webhook_url' => '',
-            'alert_levels'        => array( 'critical', 'warning', 'info' ),
-            'check_interval'      => WPSM_DEFAULT_CHECK_INTERVAL,
-            'max_stored_alerts'   => 100,
-            'api_key'             => wp_generate_password( 32, false, false ),
-            'daily_report_hour'   => 8,
+            'slack_webhook_url'      => '',
+            'generic_webhook_url'    => '',
+            'alert_levels'           => array( 'critical', 'warning', 'info' ),
+            'check_interval'         => WPSM_DEFAULT_CHECK_INTERVAL,
+            'max_stored_alerts'      => 100,
+            'api_key'                => wp_generate_password( 32, false, false ),
+            'report_schedule_type'   => 'weekly_days',
+            'report_days_of_week'    => array( 1, 2, 3, 4, 5 ),  // Mon-Fri by default
+            'report_interval_days'   => 7,
+            'report_time'            => '08:00',
+            'report_timezone'        => 'site',  // 'site' = use WordPress timezone, or specific timezone string
+            'vuln_scanning_enabled'  => false,
+            'vuln_cloud_endpoint'    => '',
+            'vuln_cloud_token'       => '',
         );
 
         add_option( 'wpsm_settings', $defaults );
@@ -72,14 +79,90 @@ class WPSM_Settings {
         return isset( $settings['max_stored_alerts'] ) ? absint( $settings['max_stored_alerts'] ) : 100;
     }
 
-    public static function next_daily_report_timestamp( $time = '08:00' ) {
-        $tz   = wp_timezone();
-        $now  = new DateTime( 'now', $tz );
-        $next = new DateTime( 'today ' . $time . ':00', $tz );
-        if ( $next <= $now ) {
-            $next->modify( '+1 day' );
+
+    public static function validate_timezone( $tz ) {
+        if ( 'site' === $tz ) {
+            return true;
         }
-        return $next->getTimestamp();
+        return in_array( $tz, timezone_identifiers_list(), true );
+    }
+
+    /**
+     * Register this site with Cloud Run vulnerability scanner.
+     */
+    public static function register_with_cloud_run( $settings ) {
+        if ( empty( $settings['vuln_cloud_endpoint'] ) || empty( $settings['vuln_cloud_token'] ) ) {
+            return;
+        }
+
+        $endpoint = trailingslashit( $settings['vuln_cloud_endpoint'] ) . 'register';
+
+        $response = wp_remote_post( $endpoint, array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $settings['vuln_cloud_token'],
+                'Content-Type'  => 'application/json',
+            ),
+            'body'    => wp_json_encode( array(
+                'site_url'  => home_url(),
+                'site_name' => get_bloginfo( 'name' ),
+                'api_key'   => self::get_api_key(),
+            ) ),
+            'timeout' => 10,
+        ) );
+
+        if ( is_wp_error( $response ) ) {
+            error_log( 'WPSM Cloud Run registration error: ' . $response->get_error_message() );
+            return false;
+        }
+
+        $status = wp_remote_retrieve_response_code( $response );
+        if ( 200 === $status ) {
+            update_option( 'wpsm_vuln_registered', array(
+                'registered_at' => current_time( 'mysql' ),
+                'endpoint'      => $endpoint,
+            ) );
+            return true;
+        }
+
+        error_log( 'WPSM Cloud Run registration failed: HTTP ' . $status );
+        return false;
+    }
+
+    /**
+     * Unregister this site from Cloud Run vulnerability scanner.
+     */
+    public static function unregister_from_cloud_run( $settings ) {
+        if ( empty( $settings['vuln_cloud_endpoint'] ) || empty( $settings['vuln_cloud_token'] ) ) {
+            return;
+        }
+
+        $endpoint = trailingslashit( $settings['vuln_cloud_endpoint'] ) . 'register';
+
+        $response = wp_remote_request( $endpoint, array(
+            'method'  => 'DELETE',
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $settings['vuln_cloud_token'],
+                'Content-Type'  => 'application/json',
+            ),
+            'body'    => wp_json_encode( array(
+                'site_url' => home_url(),
+            ) ),
+            'timeout' => 10,
+        ) );
+
+        if ( is_wp_error( $response ) ) {
+            error_log( 'WPSM Cloud Run unregistration error: ' . $response->get_error_message() );
+            return false;
+        }
+
+        $status = wp_remote_retrieve_response_code( $response );
+        if ( 200 === $status || 204 === $status ) {
+            delete_option( 'wpsm_vuln_registered' );
+            return true;
+        }
+
+        error_log( 'WPSM Cloud Run unregistration failed: HTTP ' . $status );
+        return false;
     }
 
     public function register_settings_page() {
@@ -105,7 +188,11 @@ class WPSM_Settings {
         add_settings_section( 'wpsm_general_section', 'General', '__return_false', 'wpsm-settings' );
         add_settings_field( 'check_interval', 'Check Interval (seconds)', array( $this, 'render_number_field' ), 'wpsm-settings', 'wpsm_general_section', array( 'label_for' => 'check_interval', 'desc' => 'How often to run scheduled checks. Default: 3600 (1 hour).' ) );
         add_settings_field( 'max_stored_alerts', 'Max Stored Alerts', array( $this, 'render_max_alerts' ), 'wpsm-settings', 'wpsm_general_section' );
-        add_settings_field( 'daily_report_hour', 'Daily Report Time', array( $this, 'render_daily_report_hour' ), 'wpsm-settings', 'wpsm_general_section' );
+        add_settings_field( 'report_schedule', 'Health Report Schedule', array( $this, 'render_report_schedule' ), 'wpsm-settings', 'wpsm_general_section' );
+
+        // --- Vulnerability Scanning ---
+        add_settings_section( 'wpsm_vuln_section', 'Vulnerability Scanning (Wordfence)', '__return_false', 'wpsm-settings' );
+        add_settings_field( 'vuln_scanning', 'Vulnerability Scanning', array( $this, 'render_vuln_scanning' ), 'wpsm-settings', 'wpsm_vuln_section' );
 
         // --- API ---
         add_settings_section( 'wpsm_api_section', 'REST API', '__return_false', 'wpsm-settings' );
@@ -127,16 +214,56 @@ class WPSM_Settings {
         $raw_levels                = isset( $input['alert_levels'] ) ? (array) $input['alert_levels'] : array();
         $sanitized['alert_levels'] = array_values( array_intersect( $raw_levels, array( 'critical', 'warning', 'info' ) ) );
 
-        $raw_time = isset( $input['daily_report_hour'] ) ? sanitize_text_field( $input['daily_report_hour'] ) : '08:00';
-        $sanitized['daily_report_hour'] = preg_match( '/^\d{2}:\d{2}$/', $raw_time ) ? $raw_time : '08:00';
+        // Report schedule settings.
+        $sanitized['report_schedule_type'] = isset( $input['report_schedule_type'] ) && in_array( $input['report_schedule_type'], array( 'weekly_days', 'interval' ), true ) ? $input['report_schedule_type'] : 'weekly_days';
 
-        // Reschedule daily report if time changed.
-        $old_settings = self::get_settings();
-        $old_time     = isset( $old_settings['daily_report_hour'] ) ? $old_settings['daily_report_hour'] : '08:00';
-        if ( $sanitized['daily_report_hour'] !== $old_time ) {
-            wp_clear_scheduled_hook( 'wpsm_daily_health_report' );
-            wp_schedule_event( self::next_daily_report_timestamp( $sanitized['daily_report_hour'] ), 'daily', 'wpsm_daily_health_report' );
+        // Days of week: array of integers 1-7 (ISO: 1=Mon...7=Sun).
+        $raw_days = isset( $input['report_days_of_week'] ) ? (array) $input['report_days_of_week'] : array();
+        $sanitized['report_days_of_week'] = array_values(
+            array_filter(
+                array_map( 'intval', $raw_days ),
+                function( $day ) {
+                    return $day >= 1 && $day <= 7;
+                }
+            )
+        );
+        // Fallback to Mon-Fri if empty.
+        if ( empty( $sanitized['report_days_of_week'] ) ) {
+            $sanitized['report_days_of_week'] = array( 1, 2, 3, 4, 5 );
         }
+
+        // Interval days.
+        $raw_interval = isset( $input['report_interval_days'] ) ? absint( $input['report_interval_days'] ) : 7;
+        $sanitized['report_interval_days'] = max( 1, $raw_interval );
+
+        // Report time.
+        $raw_time = isset( $input['report_time'] ) ? sanitize_text_field( $input['report_time'] ) : '08:00';
+        $sanitized['report_time'] = preg_match( '/^\d{2}:\d{2}$/', $raw_time ) ? $raw_time : '08:00';
+
+        // Report timezone.
+        $raw_tz = isset( $input['report_timezone'] ) ? sanitize_text_field( $input['report_timezone'] ) : 'site';
+        $sanitized['report_timezone'] = self::validate_timezone( $raw_tz ) ? $raw_tz : 'site';
+
+        // Vulnerability scanning settings.
+        $sanitized['vuln_scanning_enabled'] = ! empty( $input['vuln_scanning_enabled'] );
+        $sanitized['vuln_cloud_endpoint']   = isset( $input['vuln_cloud_endpoint'] ) ? esc_url_raw( $input['vuln_cloud_endpoint'] ) : '';
+        $sanitized['vuln_cloud_token']      = isset( $input['vuln_cloud_token'] ) ? sanitize_text_field( $input['vuln_cloud_token'] ) : '';
+
+        // Handle registration/unregistration with Cloud Run.
+        $old_settings       = self::get_settings();
+        $old_vuln_enabled   = ! empty( $old_settings['vuln_scanning_enabled'] );
+        $new_vuln_enabled   = $sanitized['vuln_scanning_enabled'];
+
+        if ( ! $old_vuln_enabled && $new_vuln_enabled ) {
+            // Enabling: register with Cloud Run
+            self::register_with_cloud_run( $sanitized );
+        } elseif ( $old_vuln_enabled && ! $new_vuln_enabled ) {
+            // Disabling: unregister from Cloud Run
+            self::unregister_from_cloud_run( $sanitized );
+        }
+
+        // Note: The hourly cron (wpsm_report_check) handles all scheduling logic at runtime.
+        // No need to reschedule anything here.
 
         return $sanitized;
     }
@@ -426,16 +553,170 @@ class WPSM_Settings {
         echo '<p class="description">How many alert events to keep in the local log. Older entries are automatically pruned.</p>';
     }
 
-    public function render_daily_report_hour() {
+    public function render_report_schedule() {
         $settings = self::get_settings();
-        $current  = isset( $settings['daily_report_hour'] ) ? $settings['daily_report_hour'] : '08:00';
-        $tz_label = wp_timezone_string();
 
-        printf(
-            '<input type="time" name="wpsm_settings[daily_report_hour]" value="%s" />',
-            esc_attr( $current )
+        $schedule_type = isset( $settings['report_schedule_type'] ) ? $settings['report_schedule_type'] : 'weekly_days';
+        $days_of_week  = isset( $settings['report_days_of_week'] ) ? (array) $settings['report_days_of_week'] : array( 1, 2, 3, 4, 5 );
+        $interval_days = isset( $settings['report_interval_days'] ) ? absint( $settings['report_interval_days'] ) : 7;
+        $report_time   = isset( $settings['report_time'] ) ? $settings['report_time'] : '08:00';
+        $report_tz     = isset( $settings['report_timezone'] ) ? $settings['report_timezone'] : 'site';
+        $site_tz       = wp_timezone_string();
+
+        $days = array(
+            1 => 'Monday',
+            2 => 'Tuesday',
+            3 => 'Wednesday',
+            4 => 'Thursday',
+            5 => 'Friday',
+            6 => 'Saturday',
+            7 => 'Sunday',
         );
-        echo '<p class="description">Time to send the daily health report to Slack. Timezone: <strong>' . esc_html( $tz_label ) . '</strong>.</p>';
+        ?>
+        <fieldset style="border: 1px solid #ddd; padding: 12px; margin-bottom: 12px; background: #f9f9f9; max-width: 640px">
+            <legend style="padding: 0 8px; font-weight: 600">Report Schedule Type</legend>
+
+            <label style="display: block; margin-bottom: 12px">
+                <input type="radio" name="wpsm_settings[report_schedule_type]" value="weekly_days" <?php checked( $schedule_type, 'weekly_days' ); ?> />
+                <strong>Specific days of the week</strong>
+            </label>
+
+            <div id="wpsm-weekly-days-block" style="display: <?php echo 'weekly_days' === $schedule_type ? 'block' : 'none'; ?>; margin-left: 20px; margin-bottom: 12px">
+                <p style="margin-top: 0"><strong>Select days:</strong></p>
+                <?php foreach ( $days as $day_num => $day_name ) : ?>
+                    <label style="display: inline-block; margin-right: 16px">
+                        <input type="checkbox" name="wpsm_settings[report_days_of_week][]" value="<?php echo esc_attr( $day_num ); ?>" <?php checked( in_array( $day_num, $days_of_week, true ), true ); ?> />
+                        <?php echo esc_html( $day_name ); ?>
+                    </label>
+                <?php endforeach; ?>
+            </div>
+
+            <label style="display: block; margin-bottom: 12px">
+                <input type="radio" name="wpsm_settings[report_schedule_type]" value="interval" <?php checked( $schedule_type, 'interval' ); ?> />
+                <strong>Fixed interval</strong>
+            </label>
+
+            <div id="wpsm-interval-block" style="display: <?php echo 'interval' === $schedule_type ? 'block' : 'none'; ?>; margin-left: 20px; margin-bottom: 12px">
+                <label>
+                    Every
+                    <input type="number" name="wpsm_settings[report_interval_days]" value="<?php echo esc_attr( $interval_days ); ?>" min="1" max="365" class="small-text" />
+                    days
+                </label>
+                <p class="description" style="margin-top: 4px">Examples: 7 = weekly, 14 = bi-weekly, 30 = monthly</p>
+            </div>
+
+            <label style="display: block; margin-top: 12px">
+                <strong>Send at:</strong>
+                <input type="time" name="wpsm_settings[report_time]" value="<?php echo esc_attr( $report_time ); ?>" style="margin-right: 12px;" />
+            </label>
+
+            <label style="display: block; margin-top: 12px">
+                <strong>Timezone:</strong>
+                <select name="wpsm_settings[report_timezone]" style="max-width: 320px;">
+                    <option value="site" <?php selected( $report_tz, 'site' ); ?>>
+                        Site Default (<?php echo esc_html( $site_tz ); ?>)
+                    </option>
+                    <option value="America/New_York" <?php selected( $report_tz, 'America/New_York' ); ?>>America/New_York (EST/EDT)</option>
+                    <option value="America/Chicago" <?php selected( $report_tz, 'America/Chicago' ); ?>>America/Chicago (CST/CDT)</option>
+                    <option value="America/Denver" <?php selected( $report_tz, 'America/Denver' ); ?>>America/Denver (MST/MDT)</option>
+                    <option value="America/Los_Angeles" <?php selected( $report_tz, 'America/Los_Angeles' ); ?>>America/Los_Angeles (PST/PDT)</option>
+                    <option value="America/Argentina/Buenos_Aires" <?php selected( $report_tz, 'America/Argentina/Buenos_Aires' ); ?>>America/Argentina/Buenos_Aires (ART)</option>
+                    <option value="Europe/London" <?php selected( $report_tz, 'Europe/London' ); ?>>Europe/London (GMT/BST)</option>
+                    <option value="Europe/Paris" <?php selected( $report_tz, 'Europe/Paris' ); ?>>Europe/Paris (CET/CEST)</option>
+                    <option value="Europe/Berlin" <?php selected( $report_tz, 'Europe/Berlin' ); ?>>Europe/Berlin (CET/CEST)</option>
+                    <option value="Asia/Tokyo" <?php selected( $report_tz, 'Asia/Tokyo' ); ?>>Asia/Tokyo (JST)</option>
+                    <option value="Asia/Shanghai" <?php selected( $report_tz, 'Asia/Shanghai' ); ?>>Asia/Shanghai (CST)</option>
+                    <option value="Asia/Hong_Kong" <?php selected( $report_tz, 'Asia/Hong_Kong' ); ?>>Asia/Hong_Kong (HKT)</option>
+                    <option value="Asia/Singapore" <?php selected( $report_tz, 'Asia/Singapore' ); ?>>Asia/Singapore (SGT)</option>
+                    <option value="Australia/Sydney" <?php selected( $report_tz, 'Australia/Sydney' ); ?>>Australia/Sydney (AEDT/AEST)</option>
+                    <option value="UTC" <?php selected( $report_tz, 'UTC' ); ?>>UTC</option>
+                </select>
+            </label>
+            <p class="description" style="margin-top: 4px">Reports will be sent based on the selected timezone.</p>
+        </fieldset>
+
+        <script type="text/javascript">
+            (function() {
+                const radios = document.querySelectorAll('input[name="wpsm_settings[report_schedule_type]"]');
+                const weeklyBlock = document.getElementById('wpsm-weekly-days-block');
+                const intervalBlock = document.getElementById('wpsm-interval-block');
+
+                function updateView() {
+                    const selected = document.querySelector('input[name="wpsm_settings[report_schedule_type]"]:checked').value;
+                    weeklyBlock.style.display = selected === 'weekly_days' ? 'block' : 'none';
+                    intervalBlock.style.display = selected === 'interval' ? 'block' : 'none';
+                }
+
+                radios.forEach(radio => {
+                    radio.addEventListener('change', updateView);
+                });
+            })();
+        </script>
+        <?php
+    }
+
+    public function render_vuln_scanning() {
+        $settings  = self::get_settings();
+        $enabled   = ! empty( $settings['vuln_scanning_enabled'] );
+        $endpoint  = isset( $settings['vuln_cloud_endpoint'] ) ? $settings['vuln_cloud_endpoint'] : '';
+        $token     = isset( $settings['vuln_cloud_token'] ) ? $settings['vuln_cloud_token'] : '';
+        $registered = get_option( 'wpsm_vuln_registered' );
+        ?>
+        <fieldset style="border: 1px solid #ddd; padding: 12px; margin-bottom: 12px; background: #f9f9f9; max-width: 640px">
+            <legend style="padding: 0 8px; font-weight: 600">Vulnerability Scanning Configuration</legend>
+
+            <label style="display: block; margin-bottom: 12px">
+                <input type="checkbox" name="wpsm_settings[vuln_scanning_enabled]" value="1" <?php checked( $enabled ); ?> />
+                <strong>Enable vulnerability scanning</strong>
+            </label>
+
+            <div style="display: <?php echo $enabled ? 'block' : 'none'; ?>; margin-left: 20px; margin-bottom: 12px">
+                <label style="display: block; margin-bottom: 8px">
+                    <strong>Cloud Run Endpoint:</strong>
+                    <input type="url" name="wpsm_settings[vuln_cloud_endpoint]" value="<?php echo esc_attr( $endpoint ); ?>" placeholder="https://your-service.run.app" class="regular-text" style="max-width: 400px" />
+                    <p class="description" style="margin-top: 4px">URL of your Cloud Run service that checks for vulnerabilities.</p>
+                </label>
+
+                <label style="display: block; margin-bottom: 8px">
+                    <strong>Cloud Run Bearer Token:</strong>
+                    <div style="display: flex; gap: 8px; max-width: 400px">
+                        <input type="password" id="wpsm-vuln-token" name="wpsm_settings[vuln_cloud_token]" value="<?php echo esc_attr( $token ); ?>" class="regular-text" style="font-family: monospace; flex: 1" autocomplete="off" />
+                        <button type="button" class="button" onclick="(function(btn){var inp = document.getElementById('wpsm-vuln-token'); if(inp.type==='password'){inp.type='text';btn.textContent='Hide';}else{inp.type='password';btn.textContent='Show';}})(this)">Show</button>
+                    </div>
+                    <p class="description" style="margin-top: 4px">Bearer token shared with Cloud Run for authentication.</p>
+                </label>
+
+                <?php if ( $registered ) : ?>
+                    <p style="margin-top: 12px; padding: 8px; background: #e8f5e9; border-left: 4px solid #4caf50">
+                        ✅ <strong>Registered</strong> — Last scan: <?php echo esc_html( $registered['registered_at'] ?? 'Never' ); ?>
+                    </p>
+                <?php else : ?>
+                    <p style="margin-top: 12px; padding: 8px; background: #fff3cd; border-left: 4px solid #ff9800">
+                        ⚠️ <strong>Not registered</strong> — Save settings to register this site.
+                    </p>
+                <?php endif; ?>
+            </div>
+
+            <p class="description" style="margin-top: 12px">
+                When enabled, your site registers with the central Cloud Run service.<br/>
+                Cloud Run checks your installed plugins daily against the Wordfence Intelligence database<br/>
+                and sends consolidated Slack alerts for critical vulnerabilities (CVSS ≥ 8).
+            </p>
+        </fieldset>
+
+        <script type="text/javascript">
+            (function() {
+                const checkbox = document.querySelector('input[name="wpsm_settings[vuln_scanning_enabled]"]');
+                const block = document.querySelector('div[style*="display: block; margin-left: 20px"]');
+
+                if ( checkbox && block ) {
+                    checkbox.addEventListener( 'change', function() {
+                        block.style.display = this.checked ? 'block' : 'none';
+                    } );
+                }
+            })();
+        </script>
+        <?php
     }
 
     public function render_api_key() {
